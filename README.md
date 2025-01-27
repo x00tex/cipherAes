@@ -1,6 +1,6 @@
 # CipherAes
 
-**CipherAes** is a powerful Burp Suite extension designed for cybersecurity professionals. It provides seamless encryption and decryption utilities, allowing users to effortlessly process selected text from HTTP requests and responses using various algorithms.
+**CipherAes** is a powerful Burp Suite extension that provides seamless encryption and decryption in just a few clicks, similar to Burp Suite's "Convert Selection" functionality. It allows users to effortlessly process selected text from HTTP requests and responses using various encryption algorithms.
 
 ## Features
 
@@ -32,7 +32,8 @@
 .
 ├── CipherAes.py
 └── encryption-util
-    └── EncryptionUtility.jar
+    ├── EncryptionUtility.jar
+    └── bcprov-jdk18on-1.78.1.jar
 ```
 
 ## Usage
