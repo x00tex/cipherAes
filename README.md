@@ -9,13 +9,13 @@
 - **Padding Options**: NoPadding, PKCS5Padding, PKCS7Padding.
 - **Data Formats**: Base64 and Hex.
 - **Key and IV Formats**: Base64, Hex, Plaintext, None.
-- **Profile Management**: Create, Add, and manage multiple encryption profiles.
+- **Profile Management**: Create, Add, Save, Import, Export and manage multiple encryption profiles.
 
 ## Installation
 
 1. Compile Encryption Utility
 
-    **Note:** java version "23.0.1"
+    **Note:** Tested on java "v17.0.12" and up.
 
     1. Download BouncyCastle JAR: Get the `bcprov-jdk18on-1.78.1.jar` from the [BouncyCastle website](https://www.bouncycastle.org/download/bouncy-castle-java/).
     2. Compile: `javac -cp .:bcprov-jdk18on-1.78.1.jar EncryptionUtility.java`
@@ -49,6 +49,7 @@
 ![CipherAes Context Menu](screenshots/context-menu.png)
 ![CipherAes Profiles](screenshots/profiles.png)
 ![CipherAes Settings](screenshots/settings.png)
+![CipherAes Editor](screenshots/editor.png)
 
 ## Contact
 

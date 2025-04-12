@@ -4,3 +4,4 @@ dryrun.sh
 EncryptionUtility.class
 releases
 .DS_Store
+.testing

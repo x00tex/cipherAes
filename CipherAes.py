@@ -1,22 +1,25 @@
-from burp import IBurpExtender, IContextMenuFactory, IContextMenuInvocation, IMessageEditorController
-from java.util import ArrayList
-from javax.swing import JMenuItem, JFrame, JPanel, JLabel, JComboBox, JTextField, JButton, JOptionPane, BorderFactory, JFileChooser
-from java.awt import GridBagLayout, GridBagConstraints, Insets, BorderLayout
+from burp import IBurpExtender, IContextMenuFactory, IContextMenuInvocation, IMessageEditorTab, IMessageEditorTabFactory
+from java.util import ArrayList, Base64
+from javax.swing import JTextArea, JScrollPane, JMenuItem, JFrame, JPanel, JLabel, JComboBox, JTextField, JButton, JOptionPane, BorderFactory, JFileChooser, Timer, ImageIcon
+from java.awt import GridBagLayout, GridBagConstraints, Insets, BorderLayout, Color, Cursor, Image
 from java.util.concurrent import LinkedBlockingQueue
+from java.io import File, ByteArrayInputStream
+from javax.imageio import ImageIO
 import subprocess
 import threading
 import array
 import json
 import os
 
-class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController):
-    VERSION = "1.0.0"
+class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorTabFactory):
+    VERSION = "v2.0.0"
 
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("CipherAes")
         self._callbacks.registerContextMenuFactory(self)
+        self._callbacks.registerMessageEditorTabFactory(self)
 
         self.on_load()
 
@@ -49,6 +52,9 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         print("Author: Poorduck")
         print("GitHub: https://github.com/x00tex/CipherAes")
 
+    def createNewInstance(self, controller, editable):
+        return CipherTab(self, controller, editable)
+    
     def createMenuItems(self, invocation):
         menu_list = ArrayList()
         menu_list.add(JMenuItem("Encrypt Selection", actionPerformed=lambda x: self.process_selected_text(invocation, "enc")))
@@ -78,6 +84,21 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
 
         save_button = JButton("Save", actionPerformed=lambda x: self.save_paths(java_path_field.getText(), jar_path_field.getText(), frame))
 
+        # Create the warning button
+        warning_button = JButton("WARNING!", actionPerformed=lambda x: self.show_warning_message())
+        warning_button.setBackground(Color.RED)
+        warning_button.setForeground(Color.BLACK)
+
+        # Timer for blinking effect
+        def toggle_color(event):
+            current_color = warning_button.getBackground()
+            new_color = Color.RED if current_color != Color.RED else Color.GRAY
+            warning_button.setBackground(new_color)
+
+        timer = Timer(500, toggle_color)
+        timer.start()
+
+        # Add components to the panel
         constraints.gridx = 0
         constraints.gridy = 0
         panel.add(java_path_label, constraints)
@@ -99,10 +120,25 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         constraints.gridwidth = 3
         panel.add(save_button, constraints)
 
+        constraints.gridy = 3
+        constraints.gridwidth = 1
+        panel.add(warning_button, constraints)
+
+        constraints.gridx = 2
+        version_label = JLabel(self.VERSION)
+        panel.add(version_label, constraints)
+
         frame.add(panel)
         frame.pack()
         frame.setResizable(False)
         frame.setVisible(True)
+
+    def show_warning_message(self):
+        JOptionPane.showMessageDialog(None, 
+            "Any input in these settings will be passed to system commands via subprocess.Popen().\n"
+            "Ensure inputs are safe as they are directly inserted into system commands.\n"
+            "Executed commands can be viewed in the extension logs.",
+            "Warning", JOptionPane.WARNING_MESSAGE)
 
     def choose_file(self, text_field):
         file_chooser = JFileChooser()
@@ -179,8 +215,14 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         delete_profile_button = JButton("Delete Profile", actionPerformed=lambda x: self.delete_profile())
         delete_profile_button.setToolTipText("Delete the selected profile")
 
-        reset_button = JButton("Reset", actionPerformed=lambda x: self.reset_settings())
+        reset_button = JButton("Reset All", actionPerformed=lambda x: self.reset_settings())
         reset_button.setToolTipText("Reset settings and profiles to default")
+
+        import_button = JButton("Import Profiles", actionPerformed=lambda x: self.import_settings())
+        import_button.setToolTipText("Import profiles to a json file")
+
+        export_button = JButton("Export Profiles", actionPerformed=lambda x: self.export_settings())
+        export_button.setToolTipText("Export profiles from a json file")
 
         # Align components
         constraints.gridx = 0
@@ -237,18 +279,26 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         constraints.gridx = 1
         panel.add(self.iv_field, constraints)
 
-        # Align buttons in a separate row
-        button_panel = JPanel()
-        button_panel.add(save_button)
-        button_panel.add(new_profile_button)
-        button_panel.add(delete_profile_button)
-        button_panel.add(reset_button)
+        first_row_button_panel = JPanel()
+        first_row_button_panel.add(save_button)
+        first_row_button_panel.add(new_profile_button)
+        first_row_button_panel.add(delete_profile_button)
+        first_row_button_panel.add(reset_button)
+
+        second_row_button_panel = JPanel()
+        second_row_button_panel.add(import_button)
+        second_row_button_panel.add(export_button)
 
         constraints.gridx = 0
         constraints.gridy = 9
         constraints.gridwidth = 2
-        panel.add(button_panel, constraints)
+        panel.add(first_row_button_panel, constraints)
 
+        constraints.gridx = 0
+        constraints.gridy = 10
+        constraints.gridwidth = 2
+        panel.add(second_row_button_panel, constraints)
+        
         self.settings_frame.add(panel, constraints)
         self.settings_frame.pack()  # Adjust size based on components
         self.settings_frame.setResizable(False)  # Fixed size
@@ -256,6 +306,39 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
 
         self.load_profile(self.current_profile)
 
+    def export_settings(self):
+        chooser = JFileChooser()
+        chooser.setDialogTitle("Save Profiles As")
+        chooser.setSelectedFile(File("profiles.json"))
+        if chooser.showSaveDialog(None) == JFileChooser.APPROVE_OPTION:
+            file_path = chooser.getSelectedFile().getAbsolutePath()
+            if os.path.exists(file_path):
+                overwrite = JOptionPane.showConfirmDialog(None, "File already exists. Overwrite?", "Confirm", JOptionPane.YES_NO_OPTION)
+                if overwrite != JOptionPane.YES_OPTION:
+                    return
+            try:
+                with open(file_path, 'w') as f:
+                    json.dump(self.settings, f, indent=4)
+                JOptionPane.showMessageDialog(None, "Settings exported successfully!", "Success", JOptionPane.INFORMATION_MESSAGE)
+            except Exception as e:
+                JOptionPane.showMessageDialog(None, "Failed to export profiles: {}".format(e), "Error", JOptionPane.ERROR_MESSAGE)
+
+    def import_settings(self):
+        chooser = JFileChooser()
+        chooser.setDialogTitle("Import Profiles")
+        if chooser.showOpenDialog(None) == JFileChooser.APPROVE_OPTION:
+            file_path = chooser.getSelectedFile().getAbsolutePath()
+            try:
+                with open(file_path, 'r') as f:
+                    imported_settings = json.load(f)
+                if not isinstance(imported_settings, dict):
+                    raise ValueError("Invalid format.")
+                self.settings.update(imported_settings)
+                JOptionPane.showMessageDialog(None, "Profiles imported successfully!", "Success", JOptionPane.INFORMATION_MESSAGE)
+                self.show_settings()
+            except Exception as e:
+                JOptionPane.showMessageDialog(None, "Failed to import profiles: {}".format(e), "Error", JOptionPane.ERROR_MESSAGE)
+                
     def load_profile(self, profile_name):
         if profile_name:
             profile = self.settings[profile_name]
@@ -399,6 +482,13 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         frame.setVisible(True)
 
     def run_utility(self, text, action):
+        if not isinstance(text, str):
+            raise ValueError("Invalid input type")
+        
+        allowed_actions = {"enc", "dec"}
+        if action not in allowed_actions:
+            raise ValueError("Invalid action")
+
         text = text.replace("\/", "/")
         result_queue = LinkedBlockingQueue()
 
@@ -418,7 +508,10 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
                     self.settings[self.current_profile]["format"]
                 ]
 
-                print("[+] Executing system command - {}".format(command))
+                try:
+                    print("[+] Executing system command - {}".format(' '.join('"{}"'.format(x) if i in [5, 6, 7] else x for i, x in enumerate(command))))
+                except Exception as e:
+                    print("[+] Executing system command - {}".format(command))
                 
                 process = subprocess.Popen(
                     command,
@@ -440,3 +533,172 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IMessageEditorController)
         thread.join()
 
         return result_queue.take()
+
+class CipherTab(IMessageEditorTab):
+    def __init__(self, extender, controller, editable):
+        self._extender = extender
+        self._editable = editable
+        self._controller = controller
+        self._helpers = extender._helpers
+        
+        self._panel = JPanel(GridBagLayout())
+        constraints = GridBagConstraints()
+        constraints.insets = Insets(5, 5, 5, 5)
+        
+        # quick profile switching
+        button_panel_top = JPanel()
+        self.profile_label = JLabel("Profile:")
+        button_panel_top.add(self.profile_label)
+
+        self.profile_combo = JComboBox(self._extender.settings.keys())
+        self.profile_combo.setSelectedItem(self._extender.current_profile)
+        self.profile_combo.addActionListener(lambda e: self.load_profile(self.profile_combo.getSelectedItem()))
+        button_panel_top.add(self.profile_combo)
+
+        self.refresh_button = JButton("Refresh", actionPerformed=lambda e: self.refresh_profiles)
+        self.refresh_button.setToolTipText("Refresh profile list")
+        button_panel_top.add(self.refresh_button)
+
+        # Note: fancy refresh button, but disabled for performance.
+        # refreshIconB64 = "iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAMAAAAMs7fIAAAASFBMVEVHcEwjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyM" \
+        #                  "jIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyNK7aojAAAAF3RSTlMAFgea9AP6UEjS3m" \
+        #                  "cMtKlYkCUgO30ygBjkAfgAAACESURBVBjTdY9HAoQwDANxXNIJbfH/f7qkwC2+eVwkLcukGA7ghdPbG7v64FdbMnQAK" \
+        #                  "CokSoHOvoFK6H4OSbU0YoUi14GoXo1silxX7+xD7G/cPgQSmIkXA2mMdtfVY/D5roxRt0YuVcGHcCSxjRT9/GA/Px+v" \
+        #                  "zbPgGyKXkevTTjyyT+oPGw8FMYkeJFwAAAAASUVORK5CYII="
+        # self.refresh_button = self._createImageButton(refreshIconB64, "Refresh profile list", self.refresh_profiles)
+        # button_panel_top.add(self.refresh_button)
+
+        constraints.gridx = 0
+        constraints.gridy = 0
+        constraints.fill = GridBagConstraints.HORIZONTAL
+        self._panel.add(button_panel_top, constraints)
+
+        # Input field with scroll and line wrap
+        self._input_area = JTextArea(5, 30)
+        self._input_area.setLineWrap(True)
+        self._input_area.setWrapStyleWord(True)
+        input_scroll = JScrollPane(self._input_area)
+        constraints.gridx = 0
+        constraints.gridy = 1
+        constraints.gridwidth = 3
+        constraints.fill = GridBagConstraints.BOTH
+        constraints.weightx = 1.0
+        constraints.weighty = 0.5
+        self._panel.add(input_scroll, constraints)
+        
+        # Button Panel
+        button_panel = JPanel()
+        self._encode_button = JButton("Encrypt", actionPerformed=self.encrypt)
+        button_panel.add(self._encode_button)
+        
+        self._decode_button = JButton("Decrypt", actionPerformed=self.decrypt)
+        button_panel.add(self._decode_button)
+        
+        self._clear_button = JButton("Clear", actionPerformed=self.clear)
+        button_panel.add(self._clear_button)
+        
+        constraints.gridx = 0
+        constraints.gridy = 2
+        constraints.gridwidth = 3
+        constraints.fill = GridBagConstraints.HORIZONTAL
+        constraints.weightx = 0
+        constraints.weighty = 0
+        self._panel.add(button_panel, constraints)
+
+        # Output field with scroll and line wrap
+        self._output_area = JTextArea(5, 30)
+        self._output_area.setEditable(False)
+        self._output_area.setLineWrap(True)
+        self._output_area.setWrapStyleWord(True)
+        output_scroll = JScrollPane(self._output_area)
+        constraints.gridx = 0
+        constraints.gridy = 3
+        constraints.gridwidth = 3
+        constraints.fill = GridBagConstraints.BOTH
+        constraints.weightx = 1.0
+        constraints.weighty = 0.5
+        self._panel.add(output_scroll, constraints)
+
+    def load_profile(self, profile_name):
+        self._extender.current_profile = profile_name
+
+    def refresh_profiles(self, event):
+        self.profile_combo.removeAllItems()
+        for profile in self._extender.settings.keys():
+            self.profile_combo.addItem(profile)
+        self.profile_combo.setSelectedItem(self._extender.current_profile)
+
+    # def _createImageButton(self, base64String, tooltip, action):
+    #     try:
+    #         imageBytes = Base64.getDecoder().decode(base64String)
+    #         inputStream = ByteArrayInputStream(imageBytes)
+    #         initialImg = ImageIO.read(inputStream)
+    #         width = 17
+    #         height = 17
+    #         scaledImg = initialImg.getScaledInstance(width, height, Image.SCALE_SMOOTH)
+    #         button = JButton(ImageIcon(scaledImg), actionPerformed=action)
+    #         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+    #         button.setToolTipText(tooltip)
+    #         return button
+    #     except Exception as e:
+    #         self.debug("Error creating image button: {}".format(e), type='err')
+    #         return JButton()
+            
+    def getTabCaption(self):
+        return "CipherAes"
+    
+    def getUiComponent(self):
+        return self._panel
+    
+    def isEnabled(self, content, isRequest):
+        return True
+    
+    def setMessage(self, content, isRequest):
+        pass
+    
+    def getMessage(self):
+        return None
+    
+    def isModified(self):
+        return False
+    
+    def getSelectedData(self):
+        return None
+    
+    def encrypt(self, event):
+        input_text = self._input_area.getText().encode('utf-8')
+        minified_text = self.minify_json(input_text)
+        try:
+            encrypted_text = self._extender.run_utility(minified_text, "enc")
+            self._output_area.setText(encrypted_text)
+        except Exception as e:
+            self._output_area.setText("Error encrypting text: " + str(e))
+    
+    def decrypt(self, event):
+        input_text = self._input_area.getText().encode('utf-8')
+        try:
+            decrypted_text = self._extender.run_utility(input_text, "dec")
+            prettified_text = self.prettify_json(decrypted_text)
+            self._output_area.setText(prettified_text)
+        except Exception as e:
+            self._output_area.setText("Error decrypting text: " + str(e))
+
+    def prettify_json(self, text):
+        try:
+            json_obj = json.loads(text)
+            prettified_json = json.dumps(json_obj, indent=4)
+            return prettified_json
+        except ValueError:
+            return text
+
+    def minify_json(self, text):
+        try:
+            json_obj = json.loads(text)
+            minified_json = json.dumps(json_obj, separators=(',', ':'))
+            return minified_json
+        except ValueError:
+            return text
+    
+    def clear(self, event):
+        self._input_area.setText("")
+        self._output_area.setText("")
